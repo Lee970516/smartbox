@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SmartBox 撞擊紀錄</title>
+<style>
+:root{
+  --bg:#f6f7f9;--card:#ffffff;--text:#1c2430;--muted:#6b7686;--line:#e3e7ee;
+  --accent:#2563eb;--ok:#16a34a;--warn:#d97706;--bad:#dc2626;
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#10141a;--card:#181e27;--text:#e8ecf2;--muted:#93a0b2;--line:#2a3340;
+        --accent:#5b8cff;--ok:#34d399;--warn:#fbbf24;--bad:#f87171;}
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:15px/1.5 system-ui,-apple-system,"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif}
+.wrap{max-width:900px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 2px}
+.sub{color:var(--muted);font-size:13px;margin-bottom:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--text);
+  padding:8px 14px;border-radius:8px;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.danger{color:var(--bad)}
+button:disabled{opacity:.45;cursor:not-allowed}
+.status{margin-top:10px;padding:8px 10px;border-radius:8px;background:var(--bg);font-size:14px}
+.status.ok{border-left:4px solid var(--ok)}
+.status.warn{border-left:4px solid var(--warn)}
+.status.bad{border-left:4px solid var(--bad)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+.stat .k{color:var(--muted);font-size:12px}
+.stat .v{font-size:24px;font-weight:600}
+canvas{width:100%;height:220px;display:block}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+th{color:var(--muted);font-weight:500;font-size:12px}
+.tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;color:#fff}
+.tag.ok{background:var(--ok)}.tag.warn{background:var(--warn)}.tag.bad{background:var(--bad)}
+.uncal{color:var(--muted)}
+label{font-size:13px;color:var(--muted);display:flex;gap:6px;align-items:center}
+.note{color:var(--muted);font-size:12px;margin-top:8px}
+.empty{color:var(--muted);text-align:center;padding:18px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>SmartBox 撞擊紀錄</h1>
+  <div class="sub">醫療器材智慧包裹 · 藍牙連線儀表板</div>
+
+  <div class="card">
+    <div class="bar">
+      <button id="btnConnect" class="primary">連線 SmartBox</button>
+      <button id="btnSync" disabled>重新同步</button>
+      <button id="btnCsv" disabled>匯出 CSV</button>
+      <button id="btnClear" class="danger" disabled>清除板子紀錄</button>
+      <button id="btnDisc" disabled>中斷連線</button>
+    </div>
+    <div id="status" class="status warn">尚未連線。</div>
+    <div class="note">連線時會自動把手機／電腦的目前時間傳給板子校時。板子睡眠時搜尋不到，請先敲一下板子或按 RESET 叫醒，30～60 秒內連線。</div>
+  </div>
+
+  <div class="card stats">
+    <div class="stat"><div class="k">撞擊次數</div><div class="v" id="sCount">–</div></div>
+    <div class="stat"><div class="k">最大峰值</div><div class="v" id="sMax">–</div></div>
+    <div class="stat"><div class="k">最近一次</div><div class="v" id="sLast">–</div></div>
+    <div class="stat"><div class="k">最近時間</div><div class="v" id="sLastT" style="font-size:15px;line-height:34px">–</div></div>
+  </div>
+
+  <div class="card">
+    <div class="bar" style="justify-content:space-between;margin-bottom:6px">
+      <strong>每次撞擊的峰值（g）</strong>
+      <span class="note" style="margin:0">綠 &lt; <span id="thMid"></span>　橘 &lt; <span id="thHigh"></span>　紅 ≥ <span id="thHigh2"></span></span>
+    </div>
+    <canvas id="chart"></canvas>
+  </div>
+
+  <div class="card">
+    <div class="bar" style="justify-content:space-between;margin-bottom:6px">
+      <strong>紀錄（新到舊）</strong>
+      <label><input type="checkbox" id="chkHideUncal"> 隱藏未校時的紀錄</label>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>#</th><th>時間</th><th>峰值</th><th>等級</th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+    <div class="note">等級門檻只是示範用的分級（可在程式開頭修改 TH_MID、TH_HIGH），請依實際測試結果調整。「未校時」代表是板子開機後的秒數，不是真實日期。</div>
+  </div>
+</div>
+
+<script>
+'use strict';
+// ---------- 設定 ----------
+const SVC = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const CMD = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';   // 網頁 → 板子（寫入）
+const LOG = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';   // 板子 → 網頁（通知）
+const TH_MID = 4.5;    // 峰值低於此：輕微
+const TH_HIGH = 6.0;   // 峰值低於此：中等；以上：嚴重
+const EPOCH_MIN = 1e9; // 小於此值視為「開機後秒數」
+
+// ---------- 狀態 ----------
+let device = null, cmdChar = null, logChar = null;
+let rows = [], expected = null, badLines = 0, buf = '', watchdog = null, syncing = false;
+const dec = new TextDecoder();
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+$('thMid').textContent = TH_MID + ' g';
+$('thHigh').textContent = TH_HIGH + ' g';
+$('thHigh2').textContent = TH_HIGH + ' g';
+
+function setStatus(msg, kind) {
+  const el = $('status');
+  el.textContent = msg;
+  el.className = 'status ' + (kind || 'warn');
+}
+
+function setButtons(connected) {
+  $('btnConnect').disabled = connected;
+  $('btnSync').disabled = !connected;
+  $('btnClear').disabled = !connected;
+  $('btnDisc').disabled = !connected;
+  $('btnCsv').disabled = rows.length === 0;
+}
+
+// ---------- 解析 ----------
+function parseLine(line) {
+  if (!line) return;
+  if (line.startsWith('N,')) { expected = parseInt(line.slice(2), 10); return; }
+  if (line === 'END') { finishSync(true); return; }
+  const m = /^(\d+),(\d+),(\d+(?:\.\d+)?)$/.exec(line);
+  if (m) rows.push({ idx: +m[1], t: +m[2], g: +m[3] });
+  else badLines++;
+}
+
+function onNotify(e) {
+  buf += dec.decode(e.target.value);
+  let i;
+  while ((i = buf.indexOf('\n')) >= 0) {
+    const line = buf.slice(0, i).trim();
+    buf = buf.slice(i + 1);
+    parseLine(line);
+  }
+  clearTimeout(watchdog);
+  if (syncing) watchdog = setTimeout(() => finishSync(false), 3000);
+}
+
+function finishSync(gotEnd) {
+  if (!syncing) return;
+  syncing = false;
+  clearTimeout(watchdog);
+  const got = rows.length;
+  const missing = expected == null ? 0 : Math.max(0, expected - got);
+  if (gotEnd && missing === 0 && badLines === 0) {
+    setStatus(`同步完成：共 ${got} 筆。`, 'ok');
+  } else {
+    setStatus(`同步不完整：預期 ${expected ?? '?'} 筆，收到 ${got} 筆（缺 ${missing}，無法解析 ${badLines} 行）。請按「重新同步」。`, 'bad');
+  }
+  render();
+}
+
+// ---------- 藍牙 ----------
+async function send(text) {
+  const data = new TextEncoder().encode(text);
+  if (cmdChar.writeValueWithResponse) await cmdChar.writeValueWithResponse(data);
+  else await cmdChar.writeValue(data);
+}
+
+async function connect() {
+  if (!navigator.bluetooth) {
+    setStatus('這個瀏覽器不支援 Web Bluetooth。請用電腦或 Android 上的 Chrome／Edge（iPhone 不支援）。', 'bad');
+    return;
+  }
+  if (!window.isSecureContext) {
+    setStatus('頁面必須用 https 或 localhost 開啟，直接點開 HTML 檔（file://）不行。', 'bad');
+    return;
+  }
+  try {
+    setStatus('請在彈出的視窗選擇 SmartBox…', 'warn');
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SVC] }],
+      optionalServices: [SVC]
+    });
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+    setStatus('連線中…', 'warn');
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SVC);
+    cmdChar = await svc.getCharacteristic(CMD);
+    logChar = await svc.getCharacteristic(LOG);
+    await logChar.startNotifications();
+    logChar.addEventListener('characteristicvaluechanged', onNotify);
+    setButtons(true);
+
+    const now = Math.floor(Date.now() / 1000);
+    await send('T' + now);
+    await sleep(300);
+    await sync();
+  } catch (err) {
+    setStatus('連線失敗：' + err.message, 'bad');
+    setButtons(false);
+  }
+}
+
+async function sync() {
+  if (!cmdChar) return;
+  rows = []; expected = null; badLines = 0; buf = '';
+  syncing = true;
+  setStatus('已校時，正在同步紀錄…', 'warn');
+  watchdog = setTimeout(() => finishSync(false), 4000);
+  try {
+    await send('D');
+  } catch (err) {
+    syncing = false;
+    clearTimeout(watchdog);
+    setStatus('送出同步指令失敗：' + err.message, 'bad');
+  }
+  render();
+}
+
+async function clearBoard() {
+  if (!confirm('確定要清除板子上的所有撞擊紀錄嗎？這個動作無法復原。')) return;
+  try {
+    await send('C');
+    await sleep(300);
+    await sync();
+  } catch (err) {
+    setStatus('清除失敗：' + err.message, 'bad');
+  }
+}
+
+function onDisconnected() {
+  syncing = false;
+  clearTimeout(watchdog);
+  cmdChar = null; logChar = null;
+  setButtons(false);
+  setStatus('已斷線。若板子已進入睡眠，請敲一下板子（或按 RESET）叫醒，30～60 秒內重新連線。畫面上是最後一次同步的資料。', 'warn');
+}
+
+function disconnect() {
+  if (device && device.gatt.connected) device.gatt.disconnect();
+}
+
+// ---------- 顯示 ----------
+function fmtTime(t) {
+  if (t < EPOCH_MIN) return { text: `開機後 ${t} 秒（未校時）`, cal: false };
+  const d = new Date(t * 1000);
+  return { text: d.toLocaleString('zh-TW', { hour12: false }), cal: true };
+}
+
+function level(g) {
+  if (g < TH_MID) return { cls: 'ok', text: '輕微' };
+  if (g < TH_HIGH) return { cls: 'warn', text: '中等' };
+  return { cls: 'bad', text: '嚴重' };
+}
+
+function render() {
+  setButtons(!!cmdChar);
+  $('btnCsv').disabled = rows.length === 0;
+
+  const hide = $('chkHideUncal').checked;
+  const shown = rows.filter(r => !(hide && r.t < EPOCH_MIN));
+
+  $('sCount').textContent = rows.length ? rows.length : (cmdChar && !syncing ? '0' : '–');
+  if (rows.length) {
+    const max = rows.reduce((a, b) => (b.g > a.g ? b : a));
+    const last = rows[rows.length - 1];
+    $('sMax').textContent = max.g.toFixed(2) + ' g';
+    $('sLast').textContent = last.g.toFixed(2) + ' g';
+    $('sLastT').textContent = fmtTime(last.t).text;
+  } else {
+    $('sMax').textContent = '–'; $('sLast').textContent = '–'; $('sLastT').textContent = '–';
+  }
+
+  const tb = $('tbody');
+  tb.textContent = '';
+  if (!shown.length) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 4; td.className = 'empty';
+    td.textContent = rows.length ? '沒有符合條件的紀錄' : '尚無紀錄';
+    tr.appendChild(td); tb.appendChild(tr);
+  } else {
+    for (const r of shown.slice().reverse()) {
+      const tr = document.createElement('tr');
+      const f = fmtTime(r.t), lv = level(r.g);
+      const c1 = document.createElement('td'); c1.textContent = r.idx;
+      const c2 = document.createElement('td'); c2.textContent = f.text; if (!f.cal) c2.className = 'uncal';
+      const c3 = document.createElement('td'); c3.textContent = r.g.toFixed(2) + ' g';
+      const c4 = document.createElement('td');
+      const tag = document.createElement('span'); tag.className = 'tag ' + lv.cls; tag.textContent = lv.text;
+      c4.appendChild(tag);
+      tr.append(c1, c2, c3, c4); tb.appendChild(tr);
+    }
+  }
+  drawChart(shown);
+}
+
+function drawChart(data) {
+  const cv = $('chart');
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  cv.width = w * dpr; cv.height = h * dpr;
+  const ctx = cv.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  const css = getComputedStyle(document.documentElement);
+  const col = n => css.getPropertyValue(n).trim();
+
+  const padL = 34, padR = 8, padT = 8, padB = 18;
+  const pw = w - padL - padR, ph = h - padT - padB;
+  const maxG = Math.max(8, Math.ceil(Math.max(0, ...data.map(d => d.g))));
+
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.fillStyle = col('--muted'); ctx.strokeStyle = col('--line'); ctx.lineWidth = 1;
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  const step = maxG > 12 ? 4 : 2;
+  for (let g = 0; g <= maxG; g += step) {
+    const y = padT + ph - (g / maxG) * ph;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+    ctx.fillText(g, padL - 6, y);
+  }
+  if (!data.length) {
+    ctx.textAlign = 'center'; ctx.fillText('尚無資料', w / 2, h / 2); return;
+  }
+  const n = data.length;
+  const slot = pw / n;
+  const bw = Math.max(2, Math.min(28, slot * 0.7));
+  data.forEach((d, i) => {
+    const x = padL + slot * i + (slot - bw) / 2;
+    const bh = (d.g / maxG) * ph;
+    ctx.fillStyle = col('--' + level(d.g).cls);
+    ctx.fillRect(x, padT + ph - bh, bw, bh);
+  });
+  ctx.fillStyle = col('--muted'); ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  ctx.fillText('舊', padL + 8, h - padB + 4);
+  ctx.fillText('新', w - padR - 8, h - padB + 4);
+}
+
+function exportCsv() {
+  const lines = ['序號,時間(原始值),時間(本地),已校時,峰值(g)'];
+  for (const r of rows) {
+    const f = fmtTime(r.t);
+    lines.push([r.idx, r.t, f.cal ? f.text : '', f.cal ? '是' : '否', r.g.toFixed(2)].join(','));
+  }
+  const blob = new Blob(['\ufeff' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'smartbox-impacts.csv';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// ---------- 事件 ----------
+$('btnConnect').addEventListener('click', connect);
+$('btnSync').addEventListener('click', sync);
+$('btnClear').addEventListener('click', clearBoard);
+$('btnDisc').addEventListener('click', disconnect);
+$('btnCsv').addEventListener('click', exportCsv);
+$('chkHideUncal').addEventListener('change', render);
+window.addEventListener('resize', render);
+render();
+
+if (!navigator.bluetooth) {
+  setStatus('這個瀏覽器不支援 Web Bluetooth。請用電腦或 Android 上的 Chrome／Edge（iPhone 不支援）。', 'bad');
+} else if (!window.isSecureContext) {
+  setStatus('頁面必須用 https 或 localhost 開啟，直接點開 HTML 檔（file://）不行。', 'bad');
+}
+</script>
+</body>
+</html>
